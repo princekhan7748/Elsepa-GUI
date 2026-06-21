@@ -1,0 +1,6 @@
+{
+  "name": "ELSEPA Cross-Section Analyzer",
+  "description": "Python wrapper and interactive web GUI for ELSEPA quantum mechanical calculations, providing automated analysis of electron-atom collisions, real-time cross-section visualization, batch processing, and exportable reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
