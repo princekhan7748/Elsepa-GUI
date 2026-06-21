@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "src": "/sw.js",
+      "headers": { "cache-control": "public, max-age=0, must-revalidate" },
+      "dest": "/sw.js"
+    },
+    {
+      "src": "/manifest.json",
+      "headers": { "cache-control": "public, max-age=0, must-revalidate" },
+      "dest": "/manifest.json"
+    },
+    {
+      "src": "/icon.jpg",
+      "headers": { "cache-control": "public, max-age=31536000, immutable" },
+      "dest": "/icon.jpg"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "server.ts"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}

@@ -26,7 +26,9 @@ import {
   CheckCircle,
   HelpCircle as HelpIcon,
   Sparkles,
-  Info
+  Info,
+  Download,
+  Save
 } from "lucide-react";
 import ScientificPlot from "./components/ScientificPlot";
 import PythonWrapperView from "./components/PythonWrapperView";
@@ -34,14 +36,32 @@ import ReportGenerator from "./components/ReportGenerator";
 import AICoach from "./components/AICoach";
 
 export default function App() {
-  // 1. Core Config & Calculation State
-  const [config, setConfig] = useState<ScatteringConfig>({
-    mode: "single",
-    atomicNumber: 79, // Default gold for gorgeous atomic wave peaks!
-    energy: 1000,
-    projectile: "electron",
-    potentialModel: "Hartree-Fock",
-    angleStep: 1,
+  // 1. Core Config & Calculation State & Auto-save feature
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("elsepa_autosave_enabled");
+      return saved !== "false";
+    }
+    return true;
+  });
+
+  const [config, setConfig] = useState<ScatteringConfig>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("elsepa_config");
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {}
+      }
+    }
+    return {
+      mode: "single",
+      atomicNumber: 79, // Default gold for gorgeous atomic wave peaks!
+      energy: 1000,
+      projectile: "electron",
+      potentialModel: "Hartree-Fock",
+      angleStep: 1,
+    };
   });
 
   const [activeData, setActiveData] = useState<ScatteringResultPoint[]>([]);
@@ -54,7 +74,44 @@ export default function App() {
   });
 
   const [activeTab, setActiveTab] = useState<"plot" | "python" | "report">("plot");
-  const [batchRuns, setBatchRuns] = useState<BatchCalculation[]>([]);
+  
+  const [batchRuns, setBatchRuns] = useState<BatchCalculation[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("elsepa_batchRuns");
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {}
+      }
+    }
+    return [];
+  });
+
+  // PWA Install Event Management
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallPWA = () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then((choiceResult: { outcome: string }) => {
+        if (choiceResult.outcome === "accepted") {
+          console.log("ELSEPA App successfully downloaded in browser client PWA wrapper!");
+        }
+        setDeferredPrompt(null);
+      });
+    }
+  };
 
   // Selected preset element symbol helper
   const activeElement = getElementByZ(config.atomicNumber);
@@ -82,11 +139,29 @@ export default function App() {
   // 3. Compound Builder State (Multi-Atom Compound Model)
   const [selectedBuilderZ, setSelectedBuilderZ] = useState<number>(1);
   const [selectedBuilderStoich, setSelectedBuilderStoich] = useState<number>(2);
-  const [customCompoundAtoms, setCustomCompoundAtoms] = useState<AtomComposition[]>([
-    { element: getElementByZ(1), stoichiometry: 2 },
-    { element: getElementByZ(8), stoichiometry: 1 }
-  ]);
-  const [customCompoundName, setCustomCompoundName] = useState<string>("Water");
+  
+  const [customCompoundAtoms, setCustomCompoundAtoms] = useState<AtomComposition[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("elsepa_compoundAtoms");
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {}
+      }
+    }
+    return [
+      { element: getElementByZ(1), stoichiometry: 2 },
+      { element: getElementByZ(8), stoichiometry: 1 }
+    ];
+  });
+
+  const [customCompoundName, setCustomCompoundName] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("elsepa_compoundName");
+      if (saved) return saved;
+    }
+    return "Water";
+  });
 
   // Compound Presets
   const COMPOUND_PRESETS = [
@@ -289,6 +364,101 @@ export default function App() {
     setCustomCompoundName("Water");
   };
 
+  // Auto-Save Effect
+  const [lastSavedTime, setLastSavedTime] = useState<string>("");
+
+  useEffect(() => {
+    if (!autoSaveEnabled) return;
+    try {
+      localStorage.setItem("elsepa_config", JSON.stringify(config));
+      localStorage.setItem("elsepa_batchRuns", JSON.stringify(batchRuns));
+      localStorage.setItem("elsepa_compoundAtoms", JSON.stringify(customCompoundAtoms));
+      localStorage.setItem("elsepa_compoundName", customCompoundName);
+      setLastSavedTime(new Date().toLocaleTimeString());
+    } catch (e) {
+      console.error("Failed to auto-save to localStorage:", e);
+    }
+  }, [config, batchRuns, customCompoundAtoms, customCompoundName, autoSaveEnabled]);
+
+  const handleToggleAutoSave = () => {
+    const nextVal = !autoSaveEnabled;
+    setAutoSaveEnabled(nextVal);
+    localStorage.setItem("elsepa_autosave_enabled", String(nextVal));
+    if (!nextVal) {
+      localStorage.removeItem("elsepa_config");
+      localStorage.removeItem("elsepa_batchRuns");
+      localStorage.removeItem("elsepa_compoundAtoms");
+      localStorage.removeItem("elsepa_compoundName");
+    }
+  };
+
+  // Raw data export handlers
+  const exportBatchJSON = () => {
+    if (batchRuns.length === 0) return;
+    const exportObj = {
+      timestamp: new Date().toISOString(),
+      generator: "ELSEPA Physics Analyzer - Multi-run Batch comparison",
+      runs: batchRuns.map(run => ({
+        id: run.id,
+        name: run.name,
+        element: run.elementSymbol,
+        atomicNumber: run.atomicNumber,
+        energy_eV: run.energy,
+        projectile: run.projectile,
+        potentialModel: run.potentialModel,
+        summary: run.summary,
+        data: run.data.map(p => ({
+          angle_deg: p.angle,
+          dcs_cm2_sr: p.dcs,
+          dcsMott_cm2_sr: p.dcsMott,
+          dcsRutherford_cm2_sr: p.dcsRutherford
+        }))
+      }))
+    };
+    const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `elsepa_batch_raw_data_${new Date().getTime()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportBatchCSV = () => {
+    if (batchRuns.length === 0) return;
+    let csvContent = "Angle (deg)";
+    batchRuns.forEach(run => {
+      const safeName = run.name.replace(/,/g, "").replace(/\s+/g, "_");
+      csvContent += `,${safeName}_DCS,${safeName}_Mott,${safeName}_Rutherford`;
+    });
+    csvContent += "\n";
+
+    for (let angleDeg = 0; angleDeg <= 180; angleDeg++) {
+      let row = `${angleDeg}`;
+      batchRuns.forEach(run => {
+        const pt = run.data.find(d => Math.round(d.angle) === angleDeg) || run.data[angleDeg];
+        if (pt) {
+          row += `,${pt.dcs.toExponential(4)},${pt.dcsMott.toExponential(4)},${pt.dcsRutherford.toExponential(4)}`;
+        } else {
+          row += ",,,";
+        }
+      });
+      csvContent += row + "\n";
+    }
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `elsepa_batch_comparison_data_${new Date().getTime()}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // 5. Automated Sequential Batch Processing State
   const [batchStartE, setBatchStartE] = useState<number>(1000);
   const [batchEndE, setBatchEndE] = useState<number>(5000);
@@ -380,53 +550,99 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-950 p-2 sm:p-4 md:p-6 lg:p-8 flex items-center justify-center font-sans antialiased">
-      {/* 💻 Virtual Desktop Container Framework Layer */}
-      <div className="w-full max-w-7xl bg-slate-50 border border-slate-700/60 rounded-xl overflow-hidden shadow-2xl flex flex-col min-h-[90vh]">
-        
-        {/* virtual OS desktop frame header bar decoration */}
-        <div className="bg-slate-950 px-4 py-2.5 flex items-center justify-between border-b border-slate-800 select-none">
-          <div className="flex items-center gap-2">
-            {/* Retro MAC/Linux Title Action Buttons */}
-            <div className="flex gap-1.5 mr-2">
-              <span className="w-3 h-3 rounded-full bg-red-500 inline-block border border-red-650 cursor-pointer" title="Close Window" onClick={handleResetParameters}></span>
-              <span className="w-3 h-3 rounded-full bg-yellow-400 inline-block border border-yellow-505 cursor-pointer" title="Minimize GUI"></span>
-              <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block border border-emerald-650 cursor-pointer" title="Toggle Fullscreen"></span>
-            </div>
-            
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800">
+      
+      {/* 🌐 Modern Responsive Website Navigation Header */}
+      <header className="bg-slate-900 border-b border-slate-800 px-4 sm:px-6 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4 select-none">
+        <div className="flex items-center gap-3">
+          <div className="bg-blue-600/10 p-2 rounded-lg border border-blue-500/20">
+            <Atom className="w-6 h-6 text-blue-400 animate-spin" style={{ animationDuration: "14s" }} />
+          </div>
+          <div>
             <div className="flex items-center gap-2">
-              <Atom className="w-4 h-4 text-blue-500 animate-spin" style={{ animationDuration: "14s" }} />
-              <span className="text-[11px] font-mono font-semibold text-slate-300">ELSEPA desktop_v4.2.0_run</span>
-              <span className="bg-blue-500/20 text-blue-400 text-[8.5px] font-mono px-2 py-0.5 rounded-full border border-blue-500/30 font-bold select-none">
-                LOCAL ENGINE
+              <h1 className="text-base font-bold tracking-tight text-white font-sans">ELSEPA Quantum Analyzer</h1>
+              <span className="bg-emerald-500/20 text-emerald-400 text-[9px] font-mono px-2 py-0.5 rounded border border-emerald-500/20 font-bold uppercase">
+                Console v4.2
               </span>
             </div>
-          </div>
-
-          <div className="hidden md:flex items-center gap-4 text-[10px] text-slate-500 font-mono">
-            <span>● CONNECTED</span>
-            <span>ACCELERETOR: COMP_EMU_MATRIX</span>
-            <span>SYSTEM_CPU: 1.4%</span>
+            <p className="text-[11px] text-slate-400">High-Precision Quantum Elastic Scattering Simulator</p>
           </div>
         </div>
 
-        {/* Desktop Application Action Menu bar */}
-        <div className="bg-white border-b border-slate-200 px-6 py-2 flex items-center justify-between text-xs text-slate-600 select-none hidden sm:flex">
-          <div className="flex items-center gap-5">
-            <span className="hover:text-slate-950 cursor-pointer font-medium transition-colors" onClick={handleResetParameters}>File</span>
-            <span className="hover:text-slate-950 cursor-pointer font-medium transition-colors" onClick={() => handleToggleMode("compound")}>Multi-Atom Setup</span>
-            <span className="hover:text-slate-950 cursor-pointer font-medium transition-colors" onClick={() => handleToggleMode("single")}>Single Element Preset</span>
-            <span className="hover:text-slate-950 cursor-pointer font-medium transition-colors" onClick={() => setActiveTab("python")}>Automation Py</span>
-            <span className="hover:text-slate-950 cursor-pointer font-medium transition-colors" onClick={() => setActiveTab("report")}>Report Center</span>
-            <span className="hover:text-slate-950 cursor-pointer font-medium text-blue-600 transition-colors" onClick={handleResetParameters}>Reset Parameters</span>
+        {/* Quick Action Controls & Navigation Toggles */}
+        <div className="flex flex-wrap items-center gap-4 text-xs">
+          <div className="flex items-center gap-3 text-[11px] text-slate-300 font-medium">
+            <button 
+              onClick={() => handleToggleMode("single")}
+              className={`hover:text-white transition-colors cursor-pointer px-1 py-0.5 rounded ${config.mode !== "compound" ? "text-blue-450 font-bold" : "opacity-80"}`}
+            >
+              Single Element
+            </button>
+            <span className="text-slate-700">/</span>
+            <button 
+              onClick={() => handleToggleMode("compound")}
+              className={`hover:text-white transition-colors cursor-pointer px-1 py-0.5 rounded ${config.mode === "compound" ? "text-blue-450 font-bold" : "opacity-80"}`}
+            >
+              Multi-Atom Compound
+            </button>
+            <span className="text-slate-700">|</span>
+            <button 
+              onClick={() => setActiveTab("python")}
+              className={`hover:text-white transition-colors cursor-pointer px-1 py-0.5 rounded ${activeTab === "python" ? "text-blue-450 font-bold" : "opacity-80"}`}
+            >
+              Automation Script
+            </button>
+            <span className="text-slate-700">/</span>
+            <button 
+              onClick={() => {
+                setActiveTab(activeTab === "report" ? "editor" : "report");
+              }}
+              className={`hover:text-white transition-colors cursor-pointer px-1 py-0.5 rounded ${activeTab === "report" ? "text-blue-450 font-bold" : "opacity-80"}`}
+            >
+              Report Center
+            </button>
+            <span className="text-slate-750">/</span>
+            <button 
+              onClick={handleResetParameters}
+              className="text-slate-400 hover:text-red-400 transition-colors cursor-pointer px-1 py-0.5 rounded"
+            >
+              Reset
+            </button>
           </div>
-          <div className="text-[10px] text-slate-400 font-mono">
-            UTC System Time: {new Date().toLocaleTimeString()}
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
+              <span className={`w-1.5 h-1.5 rounded-full inline-block ${autoSaveEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-500"}`}></span>
+              <span>Auto-save:</span>
+              <button 
+                onClick={handleToggleAutoSave} 
+                className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase transition-colors cursor-pointer ${
+                  autoSaveEnabled 
+                    ? "bg-emerald-500/25 text-emerald-300 border border-emerald-500/30" 
+                    : "bg-slate-800 text-slate-500 border border-slate-750"
+                }`}
+              >
+                {autoSaveEnabled ? "ON" : "OFF"}
+              </button>
+            </div>
+
+            {deferredPrompt && (
+              <button
+                onClick={handleInstallPWA}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded text-[10px] uppercase flex items-center gap-1 cursor-pointer shadow-sm transition-all hover:scale-102 active:scale-98"
+                title="Install ELSEPA directly as a standalone web app (PWA)"
+              >
+                <Download className="w-3 h-3 text-white" />
+                Install App
+              </button>
+            )}
           </div>
         </div>
+      </header>
 
-        {/* 🔬 Unified Workspace Body */}
-        <div className="bg-slate-50/50 p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start flex-1">
+      {/* 🔬 Modern Unified Workspace Container */}
+      <main className="flex-1 w-full max-w-7xl mx-auto px-4 md:px-6 py-6">
+        <div className="bg-transparent grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           
           {/* LEFT PANEL: INPUT CONTROLS CONSOLE (Z Presets & Molecular constructor & Energy inputs) */}
           <div className="lg:col-span-4 flex flex-col gap-6">
@@ -734,18 +950,44 @@ export default function App() {
 
             {/* Overlaid Data Lines Comparison Card */}
             <div className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-[10.5px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                  <TrendingUp className="w-4 h-4 text-emerald-500" />
-                  3. Overlaid Profiles ({batchRuns.length})
-                </h2>
+              <div className="flex flex-col gap-2.5 mb-3 border-b border-slate-100 pb-2.5">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-[10.5px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                    <TrendingUp className="w-4 h-4 text-emerald-500" />
+                    3. Overlaid Profiles ({batchRuns.length})
+                  </h2>
+                  {batchRuns.length > 0 && (
+                    <button
+                      onClick={clearAllBatches}
+                      className="text-[10px] text-red-500 hover:text-red-700 font-bold uppercase cursor-pointer"
+                    >
+                      Clear All
+                    </button>
+                  )}
+                </div>
+                
                 {batchRuns.length > 0 && (
-                  <button
-                    onClick={clearAllBatches}
-                    className="text-[10px] text-red-500 hover:text-red-700 font-bold uppercase cursor-pointer"
-                  >
-                    Clear All
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9.5px] text-slate-400 font-mono">Download Raw Data:</span>
+                    <div className="flex-1 flex gap-1.5">
+                      <button
+                        onClick={exportBatchJSON}
+                        className="flex-1 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100/55 hover:bg-blue-100 rounded py-1 transition-colors cursor-pointer flex items-center justify-center gap-1"
+                        title="Export all comparative runs as JSON format"
+                      >
+                        <Download className="w-3 h-3 text-blue-500" />
+                        JSON Raw
+                      </button>
+                      <button
+                        onClick={exportBatchCSV}
+                        className="flex-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-100/55 hover:bg-emerald-100 rounded py-1 transition-colors cursor-pointer flex items-center justify-center gap-1"
+                        title="Export all comparative runs as single combined CSV table file"
+                      >
+                        <Download className="w-3 h-3 text-emerald-500" />
+                        CSV Sheet
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
 
@@ -944,21 +1186,29 @@ export default function App() {
           </div>
 
         </div>
+      </main>
 
-        {/* 💻 Virtual OS Desktop bottom tray toolbar design */}
-        <footer className="bg-slate-950 border-t border-slate-800 px-6 py-4 mt-auto text-[10.5px] text-slate-405 flex flex-col sm:flex-row items-center justify-between gap-3 font-mono text-slate-400/90">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
-            <span>OS ENGINE STATUS: ACCELERATED</span>
-            <span className="text-slate-700">|</span>
-            <span className="text-slate-500">MAPPED COMPONENT MODEL: INDEPENDENT ATOM SYSTEM (IAA)</span>
+      {/* 🌐 Clean Modern Website Application Footer */}
+      <footer className="bg-slate-900 border-t border-slate-800 px-6 py-5 text-xs text-slate-400 mt-12 select-none">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+            <span>Simulation Model: Independent Atom Approximation (IAA) & Dirac-Hartree-Fock Potentials</span>
+            {autoSaveEnabled && (
+              <>
+                <span className="text-slate-700">|</span>
+                <span className="text-emerald-400">
+                  Settings Saved Offline {lastSavedTime && `(at ${lastSavedTime})`}
+                </span>
+              </>
+            )}
           </div>
-          <div className="text-slate-500">
-            Quantum Elastic Scattering Analyzer • ELSEPA Pro Desktop Tool v4.2
-          </div>
-        </footer>
+          <p className="font-sans text-[11px] opacity-85">
+            ELSEPA Quantum Portal • Multi-Atom Elastic Cross-Sections Simulator
+          </p>
+        </div>
+      </footer>
 
-      </div>
     </div>
   );
 }
