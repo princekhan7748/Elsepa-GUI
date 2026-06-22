@@ -56,3 +56,13 @@ export interface BatchCalculation {
   data: ScatteringResultPoint[];
   summary: SimulationSummary;
 }
+
+export interface ImportedReferenceDataset {
+  id: string;
+  name: string;
+  fileName: string;
+  color: string;
+  points: { angle: number; val: number }[];
+  description?: string;
+}
+

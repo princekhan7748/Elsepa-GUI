@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { ScatteringResultPoint, BatchCalculation } from "../types";
+import { ScatteringResultPoint, BatchCalculation, ImportedReferenceDataset } from "../types";
 
 interface ScientificPlotProps {
   activeData: ScatteringResultPoint[];
@@ -7,6 +7,7 @@ interface ScientificPlotProps {
   activeColor: string;
   batchRuns: BatchCalculation[];
   displayMode: "compare-theories" | "batch-compare";
+  importedDatasets?: ImportedReferenceDataset[];
 }
 
 export default function ScientificPlot({
@@ -15,11 +16,13 @@ export default function ScientificPlot({
   activeColor,
   batchRuns,
   displayMode,
+  importedDatasets = [],
 }: ScientificPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 600, height: 400 });
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
   const [showLogY, setShowLogY] = useState(true);
+
 
   // Resize observer to ensure fluid responsive canvas sizing
   useEffect(() => {
@@ -114,6 +117,22 @@ export default function ScientificPlot({
         lineWidth: 2.5,
       });
     }
+  }
+
+  // Overlay imported reference data (e.g. ELSEPA dat files, Excel CSVs)
+  if (importedDatasets && importedDatasets.length > 0) {
+    importedDatasets.forEach((dataset) => {
+      // Filter out points without valid values
+      const validPoints = dataset.points.filter((pt) => pt.val > 0 && isFinite(pt.val));
+      if (validPoints.length > 0) {
+        curvesToPlot.push({
+          name: dataset.name,
+          color: dataset.color,
+          points: validPoints,
+          lineWidth: 2.2,
+        });
+      }
+    });
   }
 
   // Adjust Y scale limits to tightly wrap the curves

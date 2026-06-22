@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ScatteringConfig, ScatteringResultPoint, SimulationSummary, BatchCalculation, AtomComposition, CompoundSetup } from "./types";
+import { ScatteringConfig, ScatteringResultPoint, SimulationSummary, BatchCalculation, AtomComposition, CompoundSetup, ImportedReferenceDataset } from "./types";
 import {
   calculateScatteringDCS,
   calculateCompoundScatteringDCS,
@@ -13,6 +13,7 @@ import {
   RotateCcw,
   Plus,
   Trash2,
+  AlertTriangle,
   LineChart,
   FileCode,
   FileText,
@@ -28,7 +29,10 @@ import {
   Sparkles,
   Info,
   Download,
-  Save
+  Save,
+  Loader2,
+  Upload,
+  FileSpreadsheet
 } from "lucide-react";
 import ScientificPlot from "./components/ScientificPlot";
 import PythonWrapperView from "./components/PythonWrapperView";
@@ -87,6 +91,77 @@ export default function App() {
     return [];
   });
 
+  const [importedDatasets, setImportedDatasets] = useState<ImportedReferenceDataset[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("elsepa_imported_datasets");
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {}
+      }
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("elsepa_imported_datasets", JSON.stringify(importedDatasets));
+  }, [importedDatasets]);
+
+  const [customBinaryPath, setCustomBinaryPath] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("elsepa_custom_binary_path") || "";
+    }
+    return "";
+  });
+
+  const [customDataPath, setCustomDataPath] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("elsepa_custom_data_path") || "";
+    }
+    return "";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("elsepa_custom_binary_path", customBinaryPath);
+  }, [customBinaryPath]);
+
+  useEffect(() => {
+    localStorage.setItem("elsepa_custom_data_path", customDataPath);
+  }, [customDataPath]);
+
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "failed">("idle");
+  const [testMessage, setTestMessage] = useState<string>("");
+
+  const handleTestBinaryConnection = async () => {
+    setTestStatus("testing");
+    setTestMessage("");
+    try {
+      const res = await fetch("/api/test-binary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customBinaryPath: customBinaryPath.trim() || undefined,
+          customDataPath: customDataPath.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTestStatus("success");
+        setTestMessage(data.message);
+      } else {
+        setTestStatus("failed");
+        setTestMessage(data.message);
+      }
+    } catch (e: any) {
+      setTestStatus("failed");
+      setTestMessage(`Failed to reach server backend: ${e.message}`);
+    }
+  };
+
+  const [calculationEngine, setCalculationEngine] = useState<string>("Local Real-Time Emulator");
+  const [isCalculatedEngine, setIsCalculatedEngine] = useState<boolean>(false);
+  const [isFetchingEngine, setIsFetchingEngine] = useState<boolean>(false);
+
   // PWA Install Event Management
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
@@ -111,6 +186,57 @@ export default function App() {
         setDeferredPrompt(null);
       });
     }
+  };
+
+  const [dragActive, setDragActive] = useState<boolean>(false);
+  const [pasteText, setPasteText] = useState<string>("");
+  const [customImportName, setCustomImportName] = useState<string>("");
+  const [isInsideIframe, setIsInsideIframe] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsInsideIframe(window.self !== window.top);
+    }
+  }, []);
+
+  const handleImportFile = (fileName: string, fileContent: string) => {
+    const lines = fileContent.split(/\r?\n/);
+    const parsedPoints: { angle: number; val: number }[] = [];
+
+    lines.forEach((line) => {
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#") || trimmed.startsWith("//") || trimmed.toLowerCase().startsWith("angle")) return;
+
+      const parts = trimmed.split(/[\s,;\t]+/);
+      if (parts.length >= 2) {
+        const first = parseFloat(parts[0]);
+        const second = parseFloat(parts[1]);
+        if (!isNaN(first) && !isNaN(second) && first >= 0 && first <= 180) {
+          parsedPoints.push({ angle: first, val: second });
+        }
+      }
+    });
+
+    if (parsedPoints.length === 0) {
+      alert(`No valid numerical scattering coordinate pairs (Angle and DCS) could be parsed from "${fileName}". Make sure the file format is whitespace-separated or comma-separated pairs.`);
+      return;
+    }
+
+    parsedPoints.sort((a, b) => a.angle - b.angle);
+
+    const colors = ["#a855f7", "#ec4899", "#10b981", "#f43f5e", "#d97706", "#2563eb"];
+    const datasetColor = colors[importedDatasets.length % colors.length];
+
+    const newDataset: ImportedReferenceDataset = {
+      id: "imported_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+      name: fileName.replace(/\.[^/.]+$/, ""),
+      fileName: fileName,
+      points: parsedPoints,
+      color: datasetColor,
+      description: `Loaded ${parsedPoints.length} steps`
+    };
+
+    setImportedDatasets((prev) => [...prev, newDataset]);
   };
 
   // Selected preset element symbol helper
@@ -292,7 +418,8 @@ export default function App() {
 
   // 4. Trigger active calculation loop upon parameter updates
   useEffect(() => {
-    let rawData;
+    // A. Step 1: Immediately render the real-time client-side emulation to keep draggable sliders buttery smooth
+    let rawData: ScatteringResultPoint[];
     if (config.mode === "compound" && config.compound) {
       rawData = calculateCompoundScatteringDCS(config);
     } else {
@@ -301,7 +428,143 @@ export default function App() {
     const summaryStats = calculateIntegratedCrossSections(rawData);
     setActiveData(rawData);
     setActiveSummary(summaryStats);
-  }, [config]);
+    setCalculationEngine("Local Real-Time Emulator");
+    setIsCalculatedEngine(false);
+
+    // B. Step 2: Set helper variables and debounce the server-side simulation endpoint fetch
+    const debounceTimer = setTimeout(async () => {
+      setIsFetchingEngine(true);
+      try {
+        if (config.mode === "compound" && config.compound) {
+          // If compound mode is active, fetch backend physics for each individual element and perform linear superposition
+          const atoms = config.compound.atoms;
+          const fetchedIndividualData = await Promise.all(
+            atoms.map(async (atom) => {
+              const body = {
+                IZ: atom.element.z,
+                NELEC: atom.element.z,
+                MNUCL: 3,
+                MELEC: config.potentialModel === "Thomas-Fermi" ? 2 : config.potentialModel === "Hartree-Fock" ? 4 : 1,
+                MUFIN: 0,
+                RMUF: 2.0,
+                MEXCH: 1,
+                MCPOL: 1,
+                VPOLA: -1.0,
+                VPOLB: -1.0,
+                MABS: 0,
+                VABSA: 2.0,
+                VABSD: 0.2,
+                IHEF: 2,
+                IELEC: config.projectile === "positron" ? 1 : -1,
+                EV: config.energy,
+                projectile: config.projectile,
+                potentialModel: config.potentialModel,
+                customBinaryPath: customBinaryPath.trim() || undefined,
+                customDataPath: customDataPath.trim() || undefined
+              };
+
+              const res = await fetch("/api/calculate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+              });
+              if (!res.ok) throw new Error("Backend compound constituent calculation failed");
+              const json = await res.json();
+              return {
+                stoichiometry: atom.stoichiometry,
+                angles: json.angles as number[],
+                dcs: json.dcs as number[],
+                engine: json.engine as string,
+                isSimulated: json.isSimulated as boolean
+              };
+            })
+          );
+
+          // Blend the stoichiometric contributions
+          const angles = fetchedIndividualData[0].angles;
+          const finalRawData: ScatteringResultPoint[] = angles.map((angle, idx) => {
+            let sumDcs = 0;
+            fetchedIndividualData.forEach(item => {
+              sumDcs += item.stoichiometry * (item.dcs[idx] || 0);
+            });
+            // Keep Mott and Rutherford reference limits
+            const fastVal = rawData.find(pt => pt.angle === angle) || rawData[idx] || rawData[rawData.length - 1];
+            return {
+              angle,
+              dcs: sumDcs,
+              dcsMott: fastVal?.dcsMott || 0,
+              dcsRutherford: fastVal?.dcsRutherford || 0
+            };
+          });
+
+          const finalStats = calculateIntegratedCrossSections(finalRawData);
+          setActiveData(finalRawData);
+          setActiveSummary(finalStats);
+          
+          const isSim = fetchedIndividualData.some(item => item.isSimulated);
+          setCalculationEngine(isSim ? "ELSEPA Emulator (Local fallback)" : "ELSEPA Solver (Backend binary)");
+          setIsCalculatedEngine(true);
+
+        } else {
+          // Single atomic element preset calculation fetch
+          const body = {
+            IZ: config.atomicNumber,
+            NELEC: config.atomicNumber,
+            MNUCL: 3,
+            MELEC: config.potentialModel === "Thomas-Fermi" ? 2 : config.potentialModel === "Hartree-Fock" ? 4 : 1,
+            MUFIN: 0,
+            RMUF: 2.0,
+            MEXCH: 1,
+            MCPOL: 1,
+            VPOLA: -1.0,
+            VPOLB: -1.0,
+            MABS: 0,
+            VABSA: 2.0,
+            VABSD: 0.2,
+            IHEF: 2,
+            IELEC: config.projectile === "positron" ? 1 : -1,
+            EV: config.energy,
+            projectile: config.projectile,
+            potentialModel: config.potentialModel,
+            customBinaryPath: customBinaryPath.trim() || undefined,
+            customDataPath: customDataPath.trim() || undefined
+          };
+
+          const res = await fetch("/api/calculate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+
+          if (!res.ok) throw new Error("Backend calculation failed");
+          const json = await res.json();
+
+          const finalRawData: ScatteringResultPoint[] = (json.angles as number[]).map((angle, idx) => {
+            const fastVal = rawData.find(pt => pt.angle === angle) || rawData[idx] || rawData[rawData.length - 1];
+            return {
+              angle,
+              dcs: json.dcs[idx] || 0,
+              dcsMott: fastVal?.dcsMott || 0,
+              dcsRutherford: fastVal?.dcsRutherford || 0
+            };
+          });
+
+          const finalStats = calculateIntegratedCrossSections(finalRawData);
+          setActiveData(finalRawData);
+          setActiveSummary(finalStats);
+          setCalculationEngine(json.isSimulated ? "ELSEPA Emulator (Local fallback)" : "ELSEPA Solver (Backend binary)");
+          setIsCalculatedEngine(true);
+        }
+      } catch (err) {
+        console.warn("Backend server calculation not reachable, defaulting to local math emulation:", err);
+        setCalculationEngine("Local Emulator");
+      } finally {
+        setIsFetchingEngine(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(debounceTimer);
+  }, [config, customBinaryPath, customDataPath]);
 
   // Handle preset single atomic elements click
   const selectElement = (z: number) => {
@@ -626,15 +889,28 @@ export default function App() {
               </button>
             </div>
 
-            {deferredPrompt && (
+            {deferredPrompt ? (
               <button
                 onClick={handleInstallPWA}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded text-[10px] uppercase flex items-center gap-1 cursor-pointer shadow-sm transition-all hover:scale-102 active:scale-98"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-2.5 py-1 rounded text-[10px] uppercase flex items-center gap-1 cursor-pointer shadow-sm transition-all hover:scale-102 active:scale-98 animate-pulse"
                 title="Install ELSEPA directly as a standalone web app (PWA)"
               >
                 <Download className="w-3 h-3 text-white" />
                 Install App
               </button>
+            ) : (
+              isInsideIframe && (
+                <button
+                  onClick={() => {
+                    window.open(window.location.href, "_blank");
+                  }}
+                  className="bg-slate-700/60 hover:bg-slate-700 text-slate-300 hover:text-white font-bold px-2.5 py-1 rounded text-[10px] uppercase flex items-center gap-1 cursor-pointer shadow-sm transition-all hover:scale-102 active:scale-98 border border-slate-600/30 font-sans"
+                  title="Open application in a separate tab to enable browser installation prompts"
+                >
+                  <Tv className="w-3 h-3 text-slate-400" />
+                  Install App (Open Tab)
+                </button>
+              )
             )}
           </div>
         </div>
@@ -948,6 +1224,88 @@ export default function App() {
               </div>
             </div>
 
+            {/* 🛰️ Desktop Workspace & local ELSEPA Fortran Binary Configurator */}
+            <div className="bg-slate-900 text-slate-100 rounded-xl border border-slate-800 p-5 shadow-md flex flex-col gap-3.5 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-emerald-500/10 to-blue-500/10 rounded-full blur-xl pointer-events-none"></div>
+              
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                    Desktop Solver Config
+                  </h3>
+                </div>
+                <span className="text-[9px] font-mono bg-slate-800 text-slate-300 px-2 py-0.5 rounded-md font-bold">
+                  LOCAL DISK ACTIVE
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Configure your computer's local compiled FORTRAN <code>elscata</code> executable path to process calculations and compare datasets directly without writing any code.
+              </p>
+
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">elscata Binary Path</label>
+                    <span className="text-[9px] font-mono text-slate-500">Auto: ./elscata</span>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="e.g. C:\Elsepa\elscata.exe"
+                    value={customBinaryPath}
+                    onChange={(e) => setCustomBinaryPath(e.target.value)}
+                    className="w-full text-xs font-mono bg-slate-950 border border-slate-800 text-emerald-400 px-3 py-2 rounded-lg outline-none focus:border-emerald-500 transition-colors placeholder-slate-700 font-medium"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">data Folder Path</label>
+                    <span className="text-[9px] font-mono text-slate-500">Auto: ./data</span>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="e.g. C:\Elsepa\data"
+                    value={customDataPath}
+                    onChange={(e) => setCustomDataPath(e.target.value)}
+                    className="w-full text-xs font-mono bg-slate-950 border border-slate-800 text-emerald-400 px-3 py-2 rounded-lg outline-none focus:border-emerald-500 transition-colors placeholder-slate-700 font-medium"
+                  />
+                </div>
+              </div>
+
+              {testStatus !== "idle" && (
+                <div className={`p-2.5 rounded-lg border text-[11px] leading-relaxed flex items-start gap-2 ${
+                  testStatus === "testing" 
+                    ? "bg-blue-950/40 border-blue-900 text-blue-300"
+                    : testStatus === "success"
+                      ? "bg-emerald-950/40 border-emerald-900 text-emerald-300"
+                      : "bg-amber-950/40 border-amber-900 text-amber-300"
+                }`}>
+                  {testStatus === "testing" && <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin shrink-0 mt-0.5" />}
+                  {testStatus === "success" && <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />}
+                  {testStatus === "failed" && <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />}
+                  <span>{testMessage}</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 mt-1">
+                <button
+                  onClick={handleTestBinaryConnection}
+                  disabled={testStatus === "testing"}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-slate-950 hover:text-black font-bold text-xs py-2 px-3 rounded-lg transition-colors cursor-pointer justify-center flex items-center gap-1.5 border border-emerald-400/20"
+                >
+                  <Tv className="w-3.5 h-3.5 text-slate-950 font-bold" />
+                  Connect & Test Solver
+                </button>
+              </div>
+
+              <div className="border-t border-slate-800/80 pt-2.5 flex items-center justify-between text-[10px] text-slate-500">
+                <span>Active Core: <span className="text-slate-300 font-semibold">{calculationEngine}</span></span>
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" title="Operational"></span>
+              </div>
+            </div>
+
             {/* Overlaid Data Lines Comparison Card */}
             <div className="bg-white rounded-xl border border-slate-200/90 p-5 shadow-xs">
               <div className="flex flex-col gap-2.5 mb-3 border-b border-slate-100 pb-2.5">
@@ -1083,7 +1441,188 @@ export default function App() {
                     activeColor="#2563eb"
                     batchRuns={batchRuns}
                     displayMode={batchRuns.length > 0 ? "batch-compare" : "compare-theories"}
+                    importedDatasets={importedDatasets}
                   />
+
+                  {/* 📊 ELSEPA External Files & Spreadsheet Data Importer */}
+                  <div className="bg-white rounded-xl border border-slate-205 border-slate-200/90 p-5 shadow-xs flex flex-col gap-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <FileSpreadsheet className="w-4 h-4 text-emerald-500 animate-pulse" />
+                        Desktop Workspace: Import Local ELSEPA Fortran Outputs or Excel spreadsheets
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Since Vercel cannot run compiled Fortran binaries directly on serverless sandboxes, you can run <code>elscata</code> on your local computer, then drag-and-drop the generated <code>dcs_*.dat</code> file or any Excel CSV spreadsheet to visualize and compare plots instantly!
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      {/* Drag & Drop Zone */}
+                      <div 
+                        onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                        onDragLeave={() => setDragActive(false)}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setDragActive(false);
+                          if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                            const file = e.dataTransfer.files[0];
+                            const reader = new FileReader();
+                            reader.onload = (event) => {
+                              if (event.target?.result) {
+                                handleImportFile(file.name, event.target.result as string);
+                              }
+                            };
+                            reader.readAsText(file);
+                          }
+                        }}
+                        className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
+                          dragActive 
+                            ? "border-emerald-500 bg-emerald-50/50" 
+                            : "border-slate-300 hover:border-slate-400 bg-slate-50/30"
+                        }`}
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = ".dat,.csv,.txt,.tsv";
+                          input.onchange = (e) => {
+                            const target = e.target as HTMLInputElement;
+                            if (target.files && target.files[0]) {
+                              const file = target.files[0];
+                              const reader = new FileReader();
+                              reader.onload = (event) => {
+                                if (event.target?.result) {
+                                  handleImportFile(file.name, event.target.result as string);
+                                }
+                              };
+                              reader.readAsText(file);
+                            }
+                          };
+                          input.click();
+                        }}
+                      >
+                        <Upload className="w-8 h-8 text-slate-400 mb-2 animate-bounce" style={{ animationDuration: "3s" }} />
+                        <span className="text-xs font-semibold text-slate-700">Drag & Drop or Browse file</span>
+                        <span className="text-[10px] text-slate-400 mt-1">Accepts ELSEPA dcs_*.dat outputs, custom raw text columns, or Excel CSV spreadsheets</span>
+                      </div>
+
+                      {/* Paste raw coordinates console */}
+                      <div className="flex flex-col gap-2 bg-slate-50/50 p-4 border border-slate-200 rounded-xl">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Quick Paste Coordinate Set</span>
+                        <textarea
+                          placeholder={`Format (Angle DCS):\n0.0 5.42e-13\n0.5 4.88e-13\n1.0 4.22e-13`}
+                          value={pasteText}
+                          onChange={(e) => setPasteText(e.target.value)}
+                          className="flex-1 w-full p-2 border border-slate-200 rounded-lg text-xs font-mono bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[90px]"
+                        />
+                        <div className="flex items-center gap-2">
+                          <input 
+                            placeholder="Custom label name (e.g. Copper exp)"
+                            value={customImportName}
+                            onChange={(e) => setCustomImportName(e.target.value)}
+                            className="text-xs px-2 py-1.5 border border-slate-200 rounded-lg flex-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          <button
+                            onClick={() => {
+                              if (!pasteText.trim()) return;
+                              handleImportFile(customImportName.trim() || `Pasted Series`, pasteText);
+                              setPasteText("");
+                              setCustomImportName("");
+                            }}
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3 py-1.5 rounded-lg shrink-0 transition-colors cursor-pointer"
+                          >
+                            Add Series
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Preloaded Scientific Samples overlay */}
+                    <div className="border-t border-slate-100 pt-3.5 mt-1">
+                      <span className="text-[10.5px] font-bold text-slate-400 uppercase tracking-widest block mb-2.5">
+                        Preloaded Comparative Benchmarks
+                      </span>
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <button
+                          onClick={() => {
+                            const goldData = `# NIST SRM 484 Elastic cross sections\n0 8.02e-13\n1 7.43e-13\n5 5.89e-13\n10 4.41e-13\n30 1.95e-13\n60 5.82e-14\n90 1.99e-14\n120 8.81e-15\n150 4.12e-15\n180 2.22e-15`;
+                            handleImportFile("NIST Gold Benchmark (80 keV)", goldData);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg border border-purple-200 hover:border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-700 font-medium transition-all pointer-events-auto cursor-pointer"
+                        >
+                          + Load Gold Benchmark (NIST)
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            const copperData = `# ELSEPA Experimental 20 keV Copper\n0 4.22e-13\n2 3.98e-13\n10 2.85e-13\n20 1.88e-13\n40 7.82e-14\n70 2.45e-14\n100 8.22e-15\n130 3.11e-15\n160 1.55e-15\n180 9.88e-16`;
+                            handleImportFile("Copper Reference Model", copperData);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg border border-pink-200 hover:border-pink-300 bg-pink-50 hover:bg-pink-100 text-pink-700 font-medium transition-all pointer-events-auto cursor-pointer"
+                        >
+                          + Load Copper Reference
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            const siData = `# ELSEPA Silicon Target 5 eV Low-Energy\n0 1.25e-14\n5 1.11e-14\n15 8.44e-15\n30 5.12e-15\n50 2.89e-15\n80 1.11e-15\n110 5.23e-16\n140 2.88e-16\n170 1.44e-16\n180 9.99e-17`;
+                            handleImportFile("Silicon Reference Model", siData);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg border border-indigo-200 hover:border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium transition-all pointer-events-auto cursor-pointer"
+                        >
+                          + Load Silicon Reference
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Active Overlaid Datasets Table */}
+                    {importedDatasets.length > 0 && (
+                      <div className="border-t border-slate-100 pt-3.5 mt-2 bg-slate-50/40 p-3 rounded-lg border border-slate-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10.5px] font-bold text-slate-400 uppercase tracking-widest">
+                            Active User Overlaid Files ({importedDatasets.length})
+                          </span>
+                          <button
+                            onClick={() => setImportedDatasets([])}
+                            className="text-[10px] uppercase font-bold text-red-500 hover:text-red-650 transition-colors cursor-pointer"
+                          >
+                            Clear All Overlays
+                          </button>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5 max-h-[140px] overflow-y-auto pr-1">
+                          {importedDatasets.map((dataset) => (
+                            <div key={dataset.id} className="flex items-center justify-between text-xs bg-white p-2 rounded-lg border border-slate-200">
+                              <div className="flex items-center gap-2">
+                                <span 
+                                  className="w-3 h-3 rounded-full shrink-0 inline-block cursor-pointer transition-transform hover:scale-110 active:scale-95" 
+                                  style={{ backgroundColor: dataset.color }}
+                                  title="Change line color"
+                                  onClick={() => {
+                                    const colors = ["#a855f7", "#ec4899", "#10b981", "#f43f5e", "#d97706", "#2563eb", "#06b6d4", "#eab308"];
+                                    const currentIdx = colors.indexOf(dataset.color);
+                                    const nextColor = colors[(currentIdx + 1) % colors.length];
+                                    setImportedDatasets(prev => prev.map(d => d.id === dataset.id ? { ...d, color: nextColor } : d));
+                                  }}
+                                ></span>
+                                <span className="font-semibold text-slate-700 truncate max-w-[200px]">{dataset.name}</span>
+                                <span className="text-[10px] text-slate-400 font-mono">({dataset.points.length} coordinate points • {dataset.fileName || 'Quick Paste data'})</span>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setImportedDatasets(prev => prev.filter(d => d.id !== dataset.id));
+                                }}
+                                className="text-slate-400 hover:text-red-500 transition-colors cursor-pointer"
+                                title="Remove reference series"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                 </div>
               )}
 
@@ -1194,6 +1733,29 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
             <span>Simulation Model: Independent Atom Approximation (IAA) & Dirac-Hartree-Fock Potentials</span>
+            {calculationEngine && (
+              <>
+                <span className="text-slate-700">|</span>
+                <span className={`flex items-center gap-1 ${isFetchingEngine ? "text-yellow-400" : calculationEngine.includes("Solver") ? "text-blue-400 font-semibold" : "text-slate-400 font-normal"}`}>
+                  {isFetchingEngine ? (
+                    <>
+                      <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />
+                      ELSEPA Computing...
+                    </>
+                  ) : (
+                    <>
+                      <span className={`w-1.5 h-1.5 rounded-full inline-block ${calculationEngine.includes("Solver") ? "bg-blue-450" : "bg-slate-500"}`}></span>
+                      Engine: {calculationEngine}
+                    </>
+                  )}
+                </span>
+                {calculationEngine.includes("Solver") && (
+                  <span className="bg-blue-900/45 text-blue-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-blue-800/50 uppercase scale-95" title="Direct high-precision physics numerical solution">
+                    PRECISION
+                  </span>
+                )}
+              </>
+            )}
             {autoSaveEnabled && (
               <>
                 <span className="text-slate-700">|</span>
